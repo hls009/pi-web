@@ -25,6 +25,12 @@ const THINKING_LEVEL_SUFFIXES = new Set<ThinkingLevel>([
  * (`anthropic/*:high`). Exact string comparison silently drops every model
  * behind a pattern like `my-gateway/*` (#307), so delegate to pi's own resolver
  * instead of reimplementing the matching rules here.
+ *
+ * A bare id that several providers offer is pi's own "add a model for each
+ * provider that offers it, and warn" (1.3.0), which the resolver reports with
+ * its `ambiguous` diagnostic; until 1.2.0 pi picked one by catalog order, and
+ * pi-web refused the entry with `assertNoAmbiguousExactPatterns()` instead. The
+ * warning reaches the caller through `warnings`, so the refusal is gone.
  */
 
 export interface ModelScopeResult {
@@ -68,43 +74,6 @@ function isSuppressibleUnmatchedGlob(pattern: string): boolean {
     || THINKING_LEVEL_SUFFIXES.has(pattern.slice(colonIndex + 1) as ThinkingLevel);
 }
 
-function exactReferenceMatches(pattern: string, models: readonly Model<Api>[]): Model<Api>[] {
-  const normalized = pattern.toLowerCase();
-  const canonical = models.filter(
-    (model) => `${model.provider}/${model.id}`.toLowerCase() === normalized,
-  );
-  if (canonical.length > 0) return canonical;
-  return models.filter((model) => model.id.toLowerCase() === normalized);
-}
-
-function assertNoAmbiguousExactPatterns(
-  patterns: readonly string[],
-  models: readonly Model<Api>[],
-): void {
-  for (const pattern of patterns) {
-    if (hasGlob(pattern)) continue;
-
-    let matches = exactReferenceMatches(pattern, models);
-    if (matches.length === 0) {
-      const colonIndex = pattern.lastIndexOf(":");
-      const suffix = colonIndex >= 0 ? pattern.slice(colonIndex + 1) : "";
-      if (THINKING_LEVEL_SUFFIXES.has(suffix as ThinkingLevel)) {
-        matches = exactReferenceMatches(pattern.slice(0, colonIndex), models);
-      }
-    }
-
-    if (matches.length > 1) {
-      const references = matches
-        .map((model) => `${model.provider}/${model.id}`)
-        .sort()
-        .join(", ");
-      throw new Error(
-        `Ambiguous enabledModels entry "${pattern}" matches multiple models: ${references}. Use provider/modelId.`,
-      );
-    }
-  }
-}
-
 /**
  * Resolve the visible model list for `patterns`.
  *
@@ -127,7 +96,6 @@ export async function resolveVisibleModels(
   }
 
   const available = await modelRuntime.getAvailable();
-  assertNoAmbiguousExactPatterns(cleaned, available);
   const snapshotRuntime = {
     getAvailable: async () => available,
   } as ModelRuntime;
@@ -136,7 +104,8 @@ export async function resolveVisibleModels(
   // when other enabledModels entries still matched. Keep exact and malformed
   // pattern warnings, and keep all no-match warnings for a total miss, where
   // the UI falls back to every available model and the user needs to know the
-  // scope did not apply.
+  // scope did not apply. An `ambiguous` diagnostic is kept too: it names the
+  // providers a bare id matched.
   const warnings = diagnostics
     .filter((diagnostic) => (
       diagnostic.code !== "no-match"

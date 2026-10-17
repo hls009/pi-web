@@ -87,8 +87,8 @@ export async function findDeferredStartupModel(
   try {
     selected = selectInitialModelScope(await resolveVisibleModels(withDeferredProviderModels(runtime), enabledModels), options);
   } catch {
-    // A requested model out of scope, or an entry ambiguous only once deferred models count
-    // (a bare id two providers share).
+    // A requested model out of scope; `resolveVisibleModels()` no longer refuses
+    // an entry several providers match (pi 1.3.0 adds every match and warns).
     return undefined;
   }
   const model = selected.model && findDeferredModel(runtime, selected.model.provider, selected.model.id);
