@@ -25,6 +25,7 @@ import {
 } from "./sessions/store";
 import { searchSessions } from "./search";
 import { autoTitle } from "./replies";
+import { currentDemoLocale, pick } from "./locale";
 import { demoOnlyMessage } from "./unavailable";
 import { settingsRoutes } from "./settings-routes";
 import { attachTerminalStream, terminalRoutes } from "./terminal";
@@ -222,6 +223,54 @@ async function cwdRoute(request: MockRequest): Promise<Response> {
   return error("Not found", 404);
 }
 
+/**
+ * POST /api/prompt/optimize — the composer's Optimize action. The demo has no
+ * model, so it answers with a canned rewrite in the UI's language, plus the
+ * sample paths its search mode would have read.
+ */
+async function promptRoute(request: MockRequest): Promise<Response> {
+  if (request.method !== "POST" || request.segments[2] !== "optimize") return error("Not found", 404);
+  const body = await request.json<{ body?: string; search?: boolean }>();
+  const text = typeof body.body === "string" ? body.body.trim() : "";
+  if (!text) return error("body is required", 400);
+  await delay(500, request.signal);
+
+  const rewrite = pick({
+    en: [
+      "Goal",
+      text,
+      "",
+      "Approach",
+      "1. Find the code the request names and read the code around it.",
+      "2. Make the change, matching the style of the file.",
+      "3. Update the tests and docs the change touches.",
+      "",
+      "Constraints",
+      "- Keep unrelated files and behavior untouched.",
+      "- Finish by naming the files changed and the checks you ran.",
+    ].join("\n"),
+    zh: [
+      "目标",
+      text,
+      "",
+      "做法",
+      "1. 先找到请求涉及的文件，并阅读它周围的代码。",
+      "2. 按该文件已有的风格完成修改。",
+      "3. 同步更新受影响的测试和文档。",
+      "",
+      "约束",
+      "- 不要改动无关的文件和行为。",
+      "- 结束时说明改动了哪些文件、跑过哪些检查。",
+    ].join("\n"),
+  }, currentDemoLocale());
+
+  return json({
+    text: rewrite,
+    retrieved: body.search ? ["components/ChatInput.tsx", "lib/prompt-optimize.ts"] : [],
+    degraded: false,
+  });
+}
+
 const ROUTES: Record<string, Handler> = {
   sessions: sessionsRoute,
   agent: agentRoute,
@@ -229,6 +278,7 @@ const ROUTES: Record<string, Handler> = {
   "file-index": fileIndexRoute,
   worktrees: worktreesRoute,
   cwd: cwdRoute,
+  prompt: promptRoute,
   home: () => json({ home: HOME }),
   "default-cwd": () => json({ cwd: SCRATCH_ROOT }),
   "project-trust": () => json({ requiresTrust: false, trusted: true }),

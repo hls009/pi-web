@@ -24,6 +24,20 @@ import {
 } from "@/lib/file-fuzzy";
 import { getMarkdownListContinuation } from "@/lib/markdown-list-continuation";
 import { isBareMcpCommand, isBuiltinMcpCommand } from "@/lib/mcp-command";
+import {
+  collectReferences,
+  composeCommandInput,
+  hasOptimizableBody,
+  referencesPreserved,
+  splitCommandInput,
+  type CommandSplit,
+  type KnownCommands,
+} from "@/lib/prompt-optimize";
+import {
+  getPromptOptimizePreference,
+  setPromptOptimizePreference,
+  type PromptOptimizePreference,
+} from "@/lib/prompt-optimize-preference";
 import { FolderIcon, getFileIcon } from "./FileIcons";
 import { ImagePreview } from "./ImagePreview";
 import { DismissButton } from "./DismissButton";
@@ -101,6 +115,11 @@ interface Props {
   /** Files picked with the attach button, handled like files dropped onto the chat. Without it the button takes images only. */
   onAttachFiles?: (files: File[]) => void;
 }
+
+/** The result line under the composer: what the optimizer did, or why it did not. */
+type OptimizeNotice =
+  | { kind: "error"; message: string }
+  | { kind: "done"; previous: string; files: number; degraded: boolean };
 
 export interface ChatInputHandle {
   insertText: (text: string) => void;
@@ -691,6 +710,11 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
   const [historyActiveIndex, setHistoryActiveIndex] = useState(0);
   const [builtinCommandPending, setBuiltinCommandPending] = useState(false);
   const builtinCommandPendingRef = useRef(false);
+  const [optimizing, setOptimizing] = useState(false);
+  const [optimizeMenuOpen, setOptimizeMenuOpen] = useState(false);
+  const [optimizeAnchorRect, setOptimizeAnchorRect] = useState<{ top: number; left: number; width: number } | null>(null);
+  const [optimizePreference, setOptimizePreference] = useState<PromptOptimizePreference>(() => getPromptOptimizePreference());
+  const [optimizeNotice, setOptimizeNotice] = useState<OptimizeNotice | null>(null);
   const [fileIndex, setFileIndex] = useState<{ cwd: string; entries: FileIndexEntry[]; truncated: boolean } | null>(null);
   const [fileIndexLoading, setFileIndexLoading] = useState(false);
   const [atServerResult, setAtServerResult] = useState<{ cwd: string; query: string; matches: FileIndexEntry[] } | null>(null);
@@ -722,6 +746,9 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
   const valueRef = useRef(value);
   const attachedImagesRef = useRef(attachedImages);
   const pendingImageCountRef = useRef(0);
+  const optimizeAbortRef = useRef<AbortController | null>(null);
+  const optimizeButtonRef = useRef<HTMLDivElement>(null);
+  const optimizeMenuRef = useRef<HTMLDivElement>(null);
   valueRef.current = value;
   attachedImagesRef.current = attachedImages;
 
@@ -956,6 +983,11 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
     setValue("");
     setAtQuery(null);
     setHistoryMenuOpen(false);
+    setOptimizeNotice(null);
+    // Sending ends the optimizer's errand: its result would land on a new turn.
+    optimizeAbortRef.current?.abort();
+    optimizeAbortRef.current = null;
+    setOptimizing(false);
     if (draftKey) clearDraft(draftKey);
     if (draftKeyRef.current && draftKeyRef.current !== draftKey) clearDraft(draftKeyRef.current);
     clearImages();
@@ -1117,6 +1149,188 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
   useEffect(() => {
     if (attachedImages.length === 0) setImageWarningDismissed(false);
   }, [attachedImages.length]);
+
+  // ── prompt optimizer ─────────────────────────────────────────────────────
+  // Rewrites the draft (or only the text after a slash command) through
+  // /api/prompt/optimize and puts the result back in the composer. It never
+  // sends anything: the rewritten text is still the user's to edit or undo.
+  const knownCommands = React.useMemo<KnownCommands>(() => ({
+    // Built-ins are always known; the session's extension, prompt and skill
+    // commands arrive when the palette first loads, and until then an unknown
+    // name is still kept rather than rewritten (see splitCommandInput).
+    names: [
+      ...BUILTIN_SLASH_COMMANDS.map((command) => command.name),
+      ...(slashCommands ?? []).map((command) => command.name),
+    ],
+    complete: slashCommands != null,
+  }), [slashCommands]);
+  const optimizeSplit: CommandSplit = splitCommandInput(value, knownCommands);
+  const optimizeModelPreference = optimizePreference.model;
+  const optimizeModel = (() => {
+    // A remembered pick that the cwd no longer offers would only fail the
+    // route, so fall back to the model the composer is showing.
+    if (
+      optimizeModelPreference
+      && modelList && modelList.length > 0
+      && !modelList.some((entry) => entry.provider === optimizeModelPreference.provider
+        && entry.id === optimizeModelPreference.modelId)
+    ) {
+      return model ?? defaultModel ?? null;
+    }
+    return optimizeModelPreference ?? model ?? defaultModel ?? null;
+  })();
+  const optimizeBody = optimizeSplit.body;
+  const optimizeDisabledReason = optimizing
+    ? undefined
+    : !hasOptimizableBody(optimizeBody, optimizeSplit.command)
+      ? t("chat.optimizeNeedText")
+      : !optimizeModel
+        ? t("chat.optimizeNeedModel")
+        : undefined;
+  // Shell mode, a quote-only composer and a running turn all leave the button
+  // out: the first two have nothing pi would read as a prompt, and while a run
+  // streams the composer is for steering.
+  const showOptimize = !compact && !bashMode && !isStreaming;
+  const canOptimize = showOptimize && !optimizing && !optimizeDisabledReason;
+
+  const updateOptimizePreference = useCallback((next: PromptOptimizePreference) => {
+    setOptimizePreference(next);
+    setPromptOptimizePreference(next);
+  }, []);
+
+  const applyOptimizedText = useCallback((text: string) => {
+    valueRef.current = text;
+    setValue(text);
+    setAtQuery(null);
+    const ta = textareaRef.current;
+    requestAnimationFrame(() => {
+      if (!ta) return;
+      ta.focus();
+      ta.setSelectionRange(text.length, text.length);
+      ta.style.height = "auto";
+      ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
+    });
+  }, []);
+
+  const findPaletteCommand = useCallback((name: string): SlashCommandPaletteItem | undefined => (
+    [...BUILTIN_SLASH_COMMANDS, ...(slashCommands ?? [])].find((command) => command.name === name)
+  ), [slashCommands]);
+
+  const runOptimize = useCallback(() => {
+    // A second click while a request runs cancels it: the provider call is
+    // abandoned rather than left to finish into a composer the user moved on.
+    if (optimizeAbortRef.current) {
+      optimizeAbortRef.current.abort();
+      optimizeAbortRef.current = null;
+      setOptimizing(false);
+      return;
+    }
+
+    const text = valueRef.current;
+    const split = splitCommandInput(text, knownCommands);
+    const target = optimizeModel;
+    if (!hasOptimizableBody(split.body, split.command) || !target) return;
+
+    // The palette may never have been opened; ask once so the next split knows
+    // the session's commands. This click uses the structural rule meanwhile.
+    if (slashCommands == null && !slashCommandsRequestedRef.current && onLoadSlashCommands) {
+      slashCommandsRequestedRef.current = true;
+      Promise.resolve(onLoadSlashCommands()).catch(() => {
+        slashCommandsRequestedRef.current = false;
+      });
+    }
+
+    const commandName = split.command?.slice(1) ?? "";
+    const paletteCommand = commandName ? findPaletteCommand(commandName) : undefined;
+    const commandDescription = paletteCommand ? getSlashDescription(paletteCommand, t) : "";
+
+    const controller = new AbortController();
+    optimizeAbortRef.current = controller;
+    setOptimizing(true);
+    setOptimizeNotice(null);
+
+    fetch("/api/prompt/optimize", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        body: split.body,
+        ...(split.command ? { command: split.command } : {}),
+        ...(commandDescription ? { commandDescription } : {}),
+        ...(cwd ? { cwd } : {}),
+        provider: target.provider,
+        modelId: target.modelId,
+        search: optimizePreference.search,
+      }),
+      signal: controller.signal,
+    })
+      .then(async (res) => {
+        const data = await res.json().catch(() => ({})) as { error?: string; text?: string; retrieved?: string[]; degraded?: boolean };
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        return data;
+      })
+      .then((data) => {
+        const optimized = (data.text ?? "").trim();
+        if (!optimized) throw new Error(t("chat.optimizeFailed"));
+        // The draft moved on while the model worked (a send, a steering message,
+        // an edit): its answer would land on text the user no longer has.
+        if (valueRef.current !== text) return;
+        // A rewrite that dropped an @file or a link would change what pi reads.
+        if (!referencesPreserved(collectReferences(split.body), collectReferences(optimized))) {
+          throw new Error(t("chat.optimizeLostReferences"));
+        }
+        applyOptimizedText(composeCommandInput(split, optimized));
+        setOptimizeNotice({
+          kind: "done",
+          previous: text,
+          files: data.retrieved?.length ?? 0,
+          degraded: data.degraded === true,
+        });
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return;
+        setOptimizeNotice({
+          kind: "error",
+          message: error instanceof Error ? error.message : String(error),
+        });
+      })
+      .finally(() => {
+        if (optimizeAbortRef.current === controller) {
+          optimizeAbortRef.current = null;
+          setOptimizing(false);
+        }
+      });
+  }, [
+    applyOptimizedText, cwd, findPaletteCommand, knownCommands, onLoadSlashCommands,
+    optimizeModel, optimizePreference.search, slashCommands, t,
+  ]);
+
+  const undoOptimize = useCallback(() => {
+    if (optimizeNotice?.kind !== "done") return;
+    applyOptimizedText(optimizeNotice.previous);
+    setOptimizeNotice(null);
+  }, [applyOptimizedText, optimizeNotice]);
+
+  // Leaving a turn's draft (session switch, new draft key) drops the notice.
+  useEffect(() => {
+    setOptimizeNotice(null);
+  }, [draftKey]);
+
+  useEffect(() => () => {
+    optimizeAbortRef.current?.abort();
+  }, []);
+
+  // Close the options popover on an outside click, like the model selector.
+  useEffect(() => {
+    if (!optimizeMenuOpen) return;
+    const handleOutsideClick = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (optimizeButtonRef.current?.contains(target)) return;
+      if (optimizeMenuRef.current?.contains(target)) return;
+      setOptimizeMenuOpen(false);
+    };
+    document.addEventListener("mousedown", handleOutsideClick);
+    return () => document.removeEventListener("mousedown", handleOutsideClick);
+  }, [optimizeMenuOpen]);
 
   // ── @ file autocomplete ──────────────────────────────────────────────────
   // Recomputed from the text before the caret on every change/caret move.
@@ -2264,6 +2478,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
               valueRef.current = e.target.value;
               setValue(e.target.value);
               setHistoryMenuOpen(false);
+              setOptimizeNotice(null);
               updateAtQuery(e.target.value, e.target.selectionStart);
             }}
             onSelect={(e) => {
@@ -2399,6 +2614,68 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
           </div>
         )}
 
+        {/* Prompt optimizer result: what it did, and the way back */}
+        {optimizeNotice && (
+          <div
+            role={optimizeNotice.kind === "error" ? "alert" : "status"}
+            className="text-xs px-2 py-1"
+            style={{
+              display: "flex", alignItems: "center", gap: 6, marginTop: 4,
+              color: optimizeNotice.kind === "error" ? "rgb(239,68,68)" : "var(--text-muted)",
+            }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }} aria-hidden="true">
+              {optimizeNotice.kind === "error" ? (
+                <>
+                  <circle cx="12" cy="12" r="9" />
+                  <line x1="12" y1="8" x2="12" y2="13" />
+                  <line x1="12" y1="16.5" x2="12.01" y2="16.5" />
+                </>
+              ) : (
+                <path d="M11.5 3.2 13 7.4l4.2 1.5L13 10.4l-1.5 4.2L10 10.4 5.8 8.9 10 7.4Z" />
+              )}
+            </svg>
+            <span style={{ minWidth: 0, flex: 1, overflowWrap: "anywhere" }}>
+              {optimizeNotice.kind === "error"
+                ? optimizeNotice.message
+                : [
+                  t("chat.optimized"),
+                  optimizeNotice.degraded
+                    ? t("chat.optimizeNoFiles")
+                    : optimizeNotice.files > 0
+                      ? t("chat.optimizeUsedFiles", { count: optimizeNotice.files })
+                      : null,
+                ].filter(Boolean).join(" · ")}
+            </span>
+            {optimizeNotice.kind === "done" && (
+              <button
+                type="button"
+                onClick={undoOptimize}
+                style={{
+                  flexShrink: 0, padding: 0,
+                  background: "none", border: "none",
+                  color: "var(--accent)", cursor: "pointer", fontSize: 12,
+                }}
+              >
+                {t("chat.optimizeUndo")}
+              </button>
+            )}
+            {optimizeNotice.kind === "error" && (
+              <button
+                type="button"
+                onClick={() => setOptimizeNotice(null)}
+                aria-label={t("chat.close")}
+                style={{ flexShrink: 0, display: "flex", padding: 0, background: "none", border: "none", color: "var(--text-dim)", cursor: "pointer" }}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                </svg>
+              </button>
+            )}
+          </div>
+        )}
+
         {/* Bottom bar: left | center (context) | right */}
         {!compact && <div className="chat-input-controls" style={{
           marginTop: isMobile ? 4 : 8,
@@ -2438,6 +2715,151 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
                 <polyline points="21 15 16 10 5 21" />
               </svg>
             </button>
+            {/* Prompt optimizer: rewrites the draft, or only the text after a command */}
+            {showOptimize && (
+              <div
+                ref={optimizeButtonRef}
+                style={{ position: "relative", flexShrink: 0, display: "flex", alignItems: "center" }}
+              >
+                <button
+                  type="button"
+                  onClick={runOptimize}
+                  disabled={!canOptimize && !optimizing}
+                  title={optimizing ? t("chat.optimizeCancel") : optimizeDisabledReason ?? t("chat.optimizePrompt")}
+                  aria-label={optimizing ? t("chat.optimizeCancel") : t("chat.optimizePrompt")}
+                  aria-busy={optimizing || undefined}
+                  style={{
+                    flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
+                    width: 32, height: 32, padding: 0,
+                    background: "none", border: "none",
+                    borderRadius: 9,
+                    color: optimizing ? "var(--accent)" : canOptimize ? "var(--text-muted)" : "var(--text-dim)",
+                    cursor: canOptimize || optimizing ? "pointer" : "not-allowed",
+                    opacity: canOptimize || optimizing ? 1 : 0.5,
+                    transition: "background 0.12s, color 0.12s",
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!canOptimize && !optimizing) return;
+                    e.currentTarget.style.background = "var(--bg-hover)";
+                    e.currentTarget.style.color = optimizing ? "var(--accent)" : "var(--text)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = "none";
+                    e.currentTarget.style.color = optimizing ? "var(--accent)" : canOptimize ? "var(--text-muted)" : "var(--text-dim)";
+                  }}
+                >
+                  {optimizing ? (
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" style={{ animation: "spin 0.8s linear infinite" }} aria-hidden="true">
+                      <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+                    </svg>
+                  ) : (
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M11.5 3.2 13 7.4l4.2 1.5L13 10.4l-1.5 4.2L10 10.4 5.8 8.9 10 7.4Z" />
+                      <path d="M18.2 14.2 19 16.4l2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8Z" />
+                    </svg>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    setOptimizeAnchorRect({ top: rect.top, left: rect.left, width: rect.width });
+                    setOptimizeMenuOpen((open) => !open);
+                  }}
+                  title={t("chat.optimizeOptions")}
+                  aria-label={t("chat.optimizeOptions")}
+                  aria-expanded={optimizeMenuOpen}
+                  style={{
+                    flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
+                    width: 16, height: 32, padding: 0,
+                    background: "none", border: "none",
+                    borderRadius: 6,
+                    color: optimizeMenuOpen ? "var(--text)" : "var(--text-dim)",
+                    cursor: "pointer",
+                  }}
+                >
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <polyline points="6 15 12 9 18 15" />
+                  </svg>
+                </button>
+                {/* Opens upward from the composer, like the model selector's panel */}
+                {optimizeMenuOpen && optimizeAnchorRect && (() => {
+                  const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+                  const viewportWidth = window.visualViewport?.width ?? window.innerWidth;
+                  const panelWidth = Math.min(300, viewportWidth - 16);
+                  return (
+                    <div
+                      ref={optimizeMenuRef}
+                      style={{
+                        position: "fixed",
+                        bottom: viewportHeight - optimizeAnchorRect.top + 6,
+                        left: isMobile ? 8 : Math.max(8, Math.min(optimizeAnchorRect.left, viewportWidth - panelWidth - 8)),
+                        width: panelWidth,
+                        zIndex: 500,
+                        display: "flex", flexDirection: "column", gap: 8,
+                        padding: 10,
+                        border: "1px solid var(--border)",
+                        borderRadius: 8,
+                        background: "var(--bg)",
+                        boxShadow: "0 -4px 16px rgba(0,0,0,0.10)",
+                        fontSize: 12,
+                      }}
+                    >
+                      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                        <span style={{ color: "var(--text-dim)" }}>{t("chat.optimizeModel")}</span>
+                        <ModelSelector
+                          variant="field"
+                          placement="up"
+                          options={modelOptions}
+                          value={optimizePreference.model}
+                          emptyLabel={t("chat.optimizeFollowModel")}
+                          ariaLabel={t("chat.optimizeModel")}
+                          onChange={(provider, modelId) => updateOptimizePreference({ ...optimizePreference, model: { provider, modelId } })}
+                          onClear={() => updateOptimizePreference({ ...optimizePreference, model: null })}
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={optimizePreference.search}
+                        onClick={() => updateOptimizePreference({ ...optimizePreference, search: !optimizePreference.search })}
+                        style={{
+                          display: "flex", alignItems: "flex-start", gap: 8,
+                          padding: "6px 8px", textAlign: "left",
+                          border: "1px solid var(--border)", borderRadius: 6,
+                          background: "none", color: "var(--text)", cursor: "pointer",
+                        }}
+                      >
+                        <span
+                          aria-hidden="true"
+                          style={{
+                            flexShrink: 0, marginTop: 1, width: 13, height: 13, borderRadius: 3,
+                            border: `1px solid ${optimizePreference.search ? "var(--accent)" : "var(--border)"}`,
+                            display: "flex", alignItems: "center", justifyContent: "center",
+                            color: "var(--accent)",
+                          }}
+                        >
+                          {optimizePreference.search && (
+                            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                              <polyline points="20 6 9 17 4 12" />
+                            </svg>
+                          )}
+                        </span>
+                        <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                          <span>{t("chat.optimizeSearch")}</span>
+                          <span style={{ color: "var(--text-dim)", fontSize: 11 }}>{t("chat.optimizeSearchHint")}</span>
+                        </span>
+                      </button>
+                      {optimizeSplit.command && (
+                        <span style={{ color: "var(--text-dim)", fontSize: 11 }}>
+                          {t("chat.optimizeCommandOnly", { command: optimizeSplit.command })}
+                        </span>
+                      )}
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
             {/* Model selector - visible always, disabled while the session or switch is busy */}
             {(modelOptions.length > 0 || model || modelError) && onModelChange && (
               <ModelSelector

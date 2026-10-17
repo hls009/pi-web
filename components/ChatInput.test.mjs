@@ -285,6 +285,54 @@ test("ignores a pointer click that reaches Stop's slot just as the run ends", ()
   assert.ok(RUN_END_CLICK_GUARD_MS <= 700, "a deliberate click after a run must not wait noticeably");
 });
 
+test("offers prompt optimization only when there is a draft to rewrite", () => {
+  const draftKey = "new:/tmp/prompt-optimize";
+  const model = { provider: "custom", modelId: "m" };
+  const render = (props, draft) => {
+    if (draft === undefined) clearDraft(draftKey);
+    else setDraft(draftKey, { value: draft, images: [] });
+    return renderToStaticMarkup(
+      React.createElement(
+        I18nProvider,
+        null,
+        React.createElement(ChatInput, {
+          onSend() {},
+          onAbort() {},
+          isStreaming: false,
+          model,
+          draftKey,
+          ...props,
+        }),
+      ),
+    );
+  };
+
+  try {
+    const ready = render({}, "fix the login bug");
+    assert.match(ready, /<button type="button" title="Optimize prompt" aria-label="Optimize prompt"/);
+    assert.match(ready, /aria-label="Optimization options"/);
+
+    // Nothing to rewrite, nothing to optimize with.
+    assert.match(render({}, ""), /disabled="" title="Type a description to optimize" aria-label="Optimize prompt"/);
+    assert.match(render({ model: null }, "fix it"), /title="No model available to optimize with"/);
+    // A command's prose body is optimizable; a bare command or a one-token
+    // argument (`/compact 3`, `/model gpt-5`) is not.
+    assert.match(render({}, "/skill:review check the new button"), /<button type="button" title="Optimize prompt"/);
+    assert.match(render({}, "/compact 3"), /disabled="" title="Type a description to optimize"/);
+
+    // Shell mode, a running turn and the compact composer leave no button.
+    assert.doesNotMatch(render({}, "!ls -la"), /aria-label="Optimize prompt"/);
+    assert.doesNotMatch(render({ isStreaming: true }, "fix it"), /aria-label="Optimize prompt"/);
+    assert.doesNotMatch(render({ compact: true }, "fix it"), /aria-label="Optimize prompt"/);
+
+    // Nothing is shown until a request finishes or fails.
+    assert.doesNotMatch(ready, /Prompt optimized/);
+    assert.doesNotMatch(ready, /Unable to optimize the prompt/);
+  } finally {
+    clearDraft(draftKey);
+  }
+});
+
 test("renders the upstream model error", () => {
   const html = renderToStaticMarkup(
     React.createElement(
