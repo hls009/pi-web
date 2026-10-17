@@ -27,6 +27,8 @@ import {
   isThinkingExpandedByDefault,
   setThinkingExpandedByDefault,
 } from "@/lib/thinking-expansion-preference";
+import { usePromptOptimizePreference, setPromptOptimizePreference } from "@/hooks/usePromptOptimizePreference";
+import type { ModelsData } from "@/lib/models-cache";
 import { ModelsConfig } from "./ModelsConfig";
 import { setupPushSubscription } from "@/lib/push-client";
 import { SkillsConfig } from "./SkillsConfig";
@@ -35,6 +37,7 @@ import { PluginsConfig } from "./PluginsConfig";
 import { McpConfig } from "./McpConfig";
 import { ConfigButton, ConfigSwitch } from "./SettingsUi";
 import { FontSettings } from "./FontSettings";
+import { ModelSelector, type ModelSelectorOption } from "./ModelSelector";
 
 interface Props {
   cwd: string | null;
@@ -74,7 +77,7 @@ export function SettingsSectionIcon({ section, size = 16, strokeWidth = 1.8 }: {
   return <svg {...common}><path d="M9 7V2M15 7V2M6 13V8a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v5a6 6 0 0 1-12 0ZM12 19v3" /></svg>;
 }
 
-function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, onQuoteSelectionChange }: Pick<Props, "sessionId" | "onSessionReloaded" | "quoteSelectionEnabled" | "onQuoteSelectionChange">) {
+function GeneralSettings({ cwd, sessionId, onSessionReloaded, quoteSelectionEnabled, onQuoteSelectionChange }: Pick<Props, "cwd" | "sessionId" | "onSessionReloaded" | "quoteSelectionEnabled" | "onQuoteSelectionChange">) {
   const { locale, setLocale, supportedLocales, t } = useI18n();
   const { preference, setThemePreference } = useTheme();
   const { width: chatContentWidth, setWidth: setChatContentWidth, fontSize, setFontSize } = useChatAppearance();
@@ -87,6 +90,10 @@ function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, 
   const [cacheMissNotices, setCacheMissNotices] = useState<boolean | null>(null);
   const [cacheMissNoticesSaving, setCacheMissNoticesSaving] = useState(false);
   const [cacheMissNoticesError, setCacheMissNoticesError] = useState<string | null>(null);
+  const optimizePreference = usePromptOptimizePreference();
+  const [optimizeModels, setOptimizeModels] = useState<ModelSelectorOption[]>([]);
+  const [optimizeModelsLoading, setOptimizeModelsLoading] = useState(false);
+  const [optimizeModelsError, setOptimizeModelsError] = useState<string | null>(null);
   const [pushRegistering, setPushRegistering] = useState(false);
   const [pushStatus, setPushStatus] = useState<{ kind: "ok" | "error"; message: string } | null>(null);
   const [webAuthEnabled, setWebAuthEnabled] = useState(false);
@@ -100,6 +107,29 @@ function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, 
       .then((data: { enabled?: boolean } | null) => setWebAuthEnabled(data?.enabled === true))
       .catch(() => {});
   }, []);
+
+  // The optimizer's model list, read as Settings › Agents reads it; the route
+  // caches per cwd, so opening General adds no repeated work.
+  useEffect(() => {
+    const controller = new AbortController();
+    setOptimizeModelsLoading(true);
+    setOptimizeModelsError(null);
+    void (async () => {
+      try {
+        const response = await fetch(`/api/models${cwd ? `?cwd=${encodeURIComponent(cwd)}` : ""}`, { signal: controller.signal });
+        const data = await response.json() as Partial<ModelsData> & { error?: string };
+        if (!response.ok || data.error) throw new Error(data.error ?? `HTTP ${response.status}`);
+        setOptimizeModels((data.modelList ?? []).map((model) => ({ provider: model.provider, modelId: model.id, name: model.name })));
+        setOptimizeModelsError(data.modelError ?? null);
+      } catch (cause) {
+        if (controller.signal.aborted) return;
+        setOptimizeModelsError(cause instanceof Error ? cause.message : String(cause));
+      } finally {
+        if (!controller.signal.aborted) setOptimizeModelsLoading(false);
+      }
+    })();
+    return () => controller.abort();
+  }, [cwd]);
 
   const logOut = async () => {
     setLoggingOut(true);
@@ -382,6 +412,40 @@ function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, 
       </section>
 
       <section className="settings-general-section">
+        <h3 className="settings-general-heading">{t("settings.promptOptimize")}</h3>
+        <p className="settings-general-description">{t("settings.promptOptimizeDescription")}</p>
+        <div className="settings-chat-options">
+          <div className="settings-chat-option settings-chat-field-option">
+            <span>{t("settings.promptOptimizeModel")}</span>
+            <div className="settings-chat-field-control">
+              <ModelSelector
+                variant="field"
+                placement="auto"
+                options={optimizeModels}
+                value={optimizePreference.model}
+                emptyLabel={t("settings.promptOptimizeFollowModel")}
+                ariaLabel={t("settings.promptOptimizeModel")}
+                busy={optimizeModelsLoading}
+                onChange={(provider, modelId) => setPromptOptimizePreference({ ...optimizePreference, model: { provider, modelId } })}
+                onClear={() => setPromptOptimizePreference({ ...optimizePreference, model: null })}
+              />
+            </div>
+          </div>
+          <div className="settings-chat-option settings-chat-switch-option">
+            <span>{t("settings.promptOptimizeSearch")}</span>
+            <ConfigSwitch
+              checked={optimizePreference.search}
+              label={t("settings.promptOptimizeSearch")}
+              describedBy="settings-prompt-optimize-search-description"
+              onChange={(enabled) => setPromptOptimizePreference({ ...optimizePreference, search: enabled })}
+            />
+          </div>
+        </div>
+        <p id="settings-prompt-optimize-search-description" className="settings-general-description">{t("settings.promptOptimizeSearchHint")}</p>
+        {optimizeModelsError && <p role="alert" className="settings-general-error">{optimizeModelsError}</p>}
+      </section>
+
+      <section className="settings-general-section">
         <h3 className="settings-general-heading">{t("settings.sidebar")}</h3>
         <div className="settings-chat-options">
           <div
@@ -618,7 +682,7 @@ export function SettingsPanel({
         </div>
 
         <main className="settings-dialog-main">
-          {sectionHost("general", <GeneralSettings sessionId={sessionId} onSessionReloaded={onSessionReloaded} quoteSelectionEnabled={quoteSelectionEnabled} onQuoteSelectionChange={onQuoteSelectionChange} />)}
+          {sectionHost("general", <GeneralSettings cwd={cwd} sessionId={sessionId} onSessionReloaded={onSessionReloaded} quoteSelectionEnabled={quoteSelectionEnabled} onQuoteSelectionChange={onQuoteSelectionChange} />)}
           {sectionHost("models", <ModelsConfig embedded cwd={cwd} onClose={onClose} />)}
           {/* Visited sections stay mounted, so the ones whose answer depends on trust take the page's
               status and load again in place when trusting from Settings › MCP changes it. */}

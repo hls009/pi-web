@@ -310,14 +310,14 @@ test("offers prompt optimization only when there is a draft to rewrite", () => {
   try {
     const ready = render({}, "fix the login bug");
     assert.match(ready, /<button type="button" title="Optimize prompt" aria-label="Optimize prompt"/);
-    assert.match(ready, /aria-label="Optimization options"/);
 
     // Nothing to rewrite, nothing to optimize with.
     assert.match(render({}, ""), /disabled="" title="Type a description to optimize" aria-label="Optimize prompt"/);
     assert.match(render({ model: null }, "fix it"), /title="No model available to optimize with"/);
     // A command's prose body is optimizable; a bare command or a one-token
-    // argument (`/compact 3`, `/model gpt-5`) is not.
-    assert.match(render({}, "/skill:review check the new button"), /<button type="button" title="Optimize prompt"/);
+    // argument (`/compact 3`, `/model gpt-5`) is not. The command rule is the
+    // button's tooltip now that the options live in Settings › General.
+    assert.match(render({}, "/skill:review check the new button"), /<button type="button" title="Optimize prompt · Only the text after \/skill:review is rewritten"/);
     assert.match(render({}, "/compact 3"), /disabled="" title="Type a description to optimize"/);
 
     // Shell mode, a running turn and the compact composer leave no button.

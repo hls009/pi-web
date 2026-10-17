@@ -1793,6 +1793,29 @@
   min-height: 28px;
 }
 
+/* A dropdown row keeps the switch rows' shape: label left, field right. */
+.settings-chat-field-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 34px;
+}
+
+.settings-chat-field-control {
+  flex: 0 1 240px;
+  min-width: 0;
+}
+
+@media (max-width: 640px) {
+  /* A phone's column leaves no room for a label and a field side by side. */
+  .settings-chat-field-option {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+  }
+}
+
 .settings-chat-range-option {
   padding: 0;
 }

@@ -1,8 +1,9 @@
 // The prompt optimizer's model and search choices, kept per browser like the
 // tool preset: they steer a composer action, not pi, and writing them to
-// settings.json would add a key the pi CLI does not read.
+// settings.json would add a key the pi CLI does not read. Settings › General and
+// the composer share the store in hooks/usePromptOptimizePreference.ts.
 
-const STORAGE_KEY = "pi-prompt-optimizer";
+export const PROMPT_OPTIMIZE_STORAGE_KEY = "pi-prompt-optimizer";
 
 interface StorageLike {
   getItem(key: string): string | null;
@@ -43,7 +44,7 @@ export function getPromptOptimizePreference(
 ): PromptOptimizePreference {
   if (!storage) return DEFAULT_PROMPT_OPTIMIZE_PREFERENCE;
   try {
-    const raw = storage.getItem(STORAGE_KEY);
+    const raw = storage.getItem(PROMPT_OPTIMIZE_STORAGE_KEY);
     if (!raw) return DEFAULT_PROMPT_OPTIMIZE_PREFERENCE;
     const parsed = JSON.parse(raw) as { model?: unknown; search?: unknown };
     return {
@@ -63,7 +64,7 @@ export function setPromptOptimizePreference(
 ): void {
   if (!storage) return;
   try {
-    storage.setItem(STORAGE_KEY, JSON.stringify(preference));
+    storage.setItem(PROMPT_OPTIMIZE_STORAGE_KEY, JSON.stringify(preference));
   } catch {
     // Browser storage is best-effort.
   }
