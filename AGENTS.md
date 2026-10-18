@@ -22,6 +22,8 @@ Typecheck: `node_modules/.bin/tsc --noEmit` · Lint: `npm run lint`
 
 pi's packages are released together: on 1.2.0 they depended on each other with `^` ranges (and an install after that release paired pi-coding-agent 1.1.0 with pi-codemode 1.2.0, which it cannot load), and since 1.3.0 they pin each other exactly. The published pi-web's dependencies resolve afresh on install either way (no lockfile ships), so keep installing every `@earendil-works/*` package the tree holds — the SDK's own dependencies included (`pi-codemode`, `pi-mcp`, `pi-telemetry`, …) — with `npm install --save-exact`, which also holds a range that a later release reintroduces. `lib/pi-packages.test.mjs` fails on any pi package that is not pinned that way.
 
+Some npm releases also drop every `libc` field from `package-lock.json` when they rewrite it ([npm/cli#8514](https://github.com/npm/cli/issues/8514)); `npm ci` on Linux then installs both the glibc and the musl builds of `@next/swc` and `sharp`. After an install or an `npm version` run, check `git diff package-lock.json`: the `libc` blocks must still be there. The `checks` CI job asserts the musl `@next/swc` package stays out of a glibc install.
+
 ---
 
 ## Architecture

@@ -23,6 +23,8 @@ jobs:
           node-version: 22.19.0
           cache: npm
       - run: npm ci
+      - name: Lockfile keeps its libc metadata
+        run: test -d node_modules/@next/swc-linux-x64-gnu && test ! -d node_modules/@next/swc-linux-x64-musl
       - run: npm run lint
       - run: npx tsc --noEmit
       - run: npm test
