@@ -18,7 +18,9 @@ export interface PromptOptimizePreference {
 
 export const DEFAULT_PROMPT_OPTIMIZE_PREFERENCE: PromptOptimizePreference = {
   model: null,
-  search: true,
+  // Off by default: searching first costs an extra model call and a project
+  // search. Opt in from Settings › General.
+  search: false,
 };
 
 function getBrowserStorage(): StorageLike | null {

@@ -65,7 +65,7 @@ export const zhCNLocale: LocalePlugin = {
     "settings.promptOptimizeModel": "优化模型",
     "settings.promptOptimizeFollowModel": "跟随当前模型",
     "settings.promptOptimizeSearch": "先检索项目文件",
-    "settings.promptOptimizeSearchHint": "读取请求涉及的文件，作为改写的上下文。",
+    "settings.promptOptimizeSearchHint": "读取请求涉及的文件，作为改写的上下文。会更慢：需要额外一次规划模型调用并检索项目。",
     "settings.sidebar": "侧边栏",
     "settings.filesPlacement": "文件浏览器",
     "settings.filesPlacementBelow": "会话下方",

@@ -54,7 +54,7 @@ function fixture({ initial = {}, blocked = false, server = false } = {}) {
   };
 }
 
-test("the server renders following the current model and searching, without touching browser APIs", () => {
+test("the server renders following the current model and not searching, without touching browser APIs", () => {
   const store = fixture({ server: true, initial: { [KEY]: JSON.stringify({ model: { provider: "custom", modelId: "m" }, search: false }) } });
   assert.deepEqual(store.usePromptOptimizePreference(), preference.DEFAULT_PROMPT_OPTIMIZE_PREFERENCE);
 });

@@ -65,7 +65,7 @@ export const enLocale: LocalePlugin = {
     "settings.promptOptimizeModel": "Optimization model",
     "settings.promptOptimizeFollowModel": "Current model",
     "settings.promptOptimizeSearch": "Search project files first",
-    "settings.promptOptimizeSearchHint": "Reads the files the request points at and uses them as context.",
+    "settings.promptOptimizeSearchHint": "Reads the files the request points at and uses them as context. Slower: it adds a planning model call and a search of the project.",
     "settings.sidebar": "Sidebar",
     "settings.filesPlacement": "File browser",
     "settings.filesPlacementBelow": "Below sessions",

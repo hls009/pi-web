@@ -65,7 +65,7 @@ export const zhTWLocale: LocalePlugin = {
     "settings.promptOptimizeModel": "最佳化模型",
     "settings.promptOptimizeFollowModel": "跟隨目前模型",
     "settings.promptOptimizeSearch": "先檢索專案檔案",
-    "settings.promptOptimizeSearchHint": "讀取請求涉及的檔案，作為改寫的上下文。",
+    "settings.promptOptimizeSearchHint": "讀取請求涉及的檔案，作為改寫的上下文。會較慢：需要額外一次規劃模型呼叫並檢索專案。",
     "settings.sidebar": "側邊欄",
     "settings.filesPlacement": "檔案瀏覽器",
     "settings.filesPlacementBelow": "工作階段下方",

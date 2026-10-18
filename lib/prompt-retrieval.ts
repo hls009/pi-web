@@ -23,6 +23,31 @@ const execFileAsync = promisify(execFile);
 const HARD_READ_BYTES = 512 * 1024;
 
 const GIT_GREP_TIMEOUT_MS = 5_000;
+/** Same window as the file listing: a prompt rewritten twice reuses the search. */
+const GIT_GREP_CACHE_TTL_MS = 10_000;
+const GIT_GREP_CACHE_MAX_ENTRIES = 20;
+/** Paths kept per query; the caller's `limit` slices below this. */
+const GIT_GREP_HARD_CAP = 1_000;
+
+interface GrepCacheEntry {
+  hits: string[];
+  expiresAt: number;
+}
+
+// Per-process so it survives Next.js hot-reload, like the file-index cache; the
+// keys include the cwd and the sorted terms, so only a repeated query reuses it.
+declare global {
+  var __piPromptGrepCache: Map<string, GrepCacheEntry> | undefined;
+}
+
+function getGrepCache(): Map<string, GrepCacheEntry> {
+  if (!globalThis.__piPromptGrepCache) globalThis.__piPromptGrepCache = new Map();
+  return globalThis.__piPromptGrepCache;
+}
+
+function grepCacheKey(cwd: string, terms: readonly string[]): string {
+  return `${cwd}\0${[...new Set(terms)].sort().join("\0")}`;
+}
 /** Extensions we never read: binaries and archives. Everything else is tried. */
 const BINARY_EXTENSIONS = new Set([
   "png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "ico", "svgz", "tif", "tiff",
@@ -139,17 +164,36 @@ export async function searchProjectContents(
 ): Promise<string[]> {
   const terms = keywords.map((entry) => entry.trim()).filter(Boolean).slice(0, 8);
   if (terms.length === 0) return [];
+  const wanted = Math.max(0, limit);
+  if (wanted === 0) return [];
+
+  const cache = getGrepCache();
+  const key = grepCacheKey(cwd, terms);
+  const now = Date.now();
+  const cached = cache.get(key);
+  if (cached && cached.expiresAt > now) return cached.hits.slice(0, wanted);
+
+  let hits: string[];
   try {
     const { stdout } = await execFileAsync(
       "git",
       ["-C", cwd, "grep", "-l", "-I", "-i", "-F", ...terms.flatMap((term) => ["-e", term]), "--"],
       { timeout: GIT_GREP_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024, env: { ...process.env, LC_ALL: "C" } },
     );
-    return stdout.split(/\r?\n/).filter(Boolean).slice(0, Math.max(0, limit));
+    hits = stdout.split(/\r?\n/).filter(Boolean).slice(0, GIT_GREP_HARD_CAP);
   } catch {
     // Not a git repo, no match, or the search timed out: path matching alone.
-    return [];
+    hits = [];
   }
+
+  // The empty answer is cached too: outside a repository the repeated git call
+  // is cheap but pointless, and a real miss is the same answer within the TTL.
+  for (const [entryKey, entry] of cache) {
+    if (entry.expiresAt <= now) cache.delete(entryKey);
+  }
+  if (cache.size >= GIT_GREP_CACHE_MAX_ENTRIES) cache.clear();
+  cache.set(key, { hits, expiresAt: now + GIT_GREP_CACHE_TTL_MS });
+  return hits.slice(0, wanted);
 }
 
 export interface RetrievedExcerpt {

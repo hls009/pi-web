@@ -19,7 +19,10 @@ export interface PromptOptimizePreference {
 
 export const DEFAULT_PROMPT_OPTIMIZE_PREFERENCE: PromptOptimizePreference = {
   model: null,
-  search: true,
+  // Off by default: searching the project first costs an extra model call and a
+  // git search, which made the Optimize button feel stuck. The user opts in
+  // from Settings › General.
+  search: false,
 };
 
 function getBrowserStorage(): StorageLike | null {
