@@ -362,6 +362,21 @@ test("lists the project files an optimized prompt used", () => {
   const degraded = render({ kind: "done", previous: "fix it", files: [], degraded: true });
   assert.match(degraded, /Prompt optimized · no project file matched/);
   assert.doesNotMatch(degraded, /project file\(s\) used/);
+
+  // A rewrite that dropped references says so instead of losing them silently.
+  const restored = render({
+    kind: "done",
+    previous: "fix @a.ts",
+    files: [],
+    degraded: true,
+    restored: ["@a.ts"],
+  });
+  assert.match(restored, /restored 1 dropped reference\(s\)/);
+
+  // Neither an echo nor a dropped draft is an error: a muted info line.
+  const info = render({ kind: "info", message: "Prompt is already clear; nothing changed" });
+  assert.match(info, /Prompt is already clear; nothing changed/);
+  assert.doesNotMatch(info, />Undo</);
 });
 
 test("renders the upstream model error", () => {

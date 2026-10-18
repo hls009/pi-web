@@ -90,15 +90,27 @@ export function collectReferences(text: string): TextReferences {
 }
 
 /**
+ * The references the original held and the rewrite dropped, in original order:
+ * `@path` mentions (with their `@`) then links. The composer appends these back
+ * rather than losing what pi would read.
+ */
+export function missingReferences(before: TextReferences, after: TextReferences): string[] {
+  const keptMentions = new Set(after.mentions);
+  const missingMentions = before.mentions
+    .filter((mention) => !keptMentions.has(mention))
+    .map((mention) => `@${mention}`);
+  const keptUrls = new Set(after.urls);
+  const missingUrls = before.urls.filter((url) => !keptUrls.has(url));
+  return [...missingMentions, ...missingUrls];
+}
+
+/**
  * Whether a rewrite kept every reference the original held. A model that drops
- * an `@path` would silently change what pi reads, so the composer refuses such
- * a result and keeps the user's text instead of showing half of it.
+ * an `@path` would silently change what pi reads; the composer restores the
+ * missing ones instead of showing half of the text.
  */
 export function referencesPreserved(before: TextReferences, after: TextReferences): boolean {
-  const keptMentions = new Set(after.mentions);
-  if (before.mentions.some((mention) => !keptMentions.has(mention))) return false;
-  const keptUrls = new Set(after.urls);
-  return before.urls.every((url) => keptUrls.has(url));
+  return missingReferences(before, after).length === 0;
 }
 
 const LABEL_LINES = [

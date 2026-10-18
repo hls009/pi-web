@@ -28,7 +28,7 @@ import {
   collectReferences,
   composeCommandInput,
   hasOptimizableBody,
-  referencesPreserved,
+  missingReferences,
   splitCommandInput,
   type CommandSplit,
   type KnownCommands,
@@ -115,7 +115,8 @@ interface Props {
 /** The result line under the composer: what the optimizer did, or why it did not. */
 export type OptimizeNotice =
   | { kind: "error"; message: string }
-  | { kind: "done"; previous: string; files: string[]; degraded: boolean };
+  | { kind: "info"; message: string }
+  | { kind: "done"; previous: string; files: string[]; degraded: boolean; restored?: string[] };
 
 export interface ChatInputHandle {
   insertText: (text: string) => void;
@@ -683,7 +684,7 @@ export function OptimizeResultLine({
         )}
       </svg>
       <span style={{ minWidth: 0, flex: 1, overflowWrap: "anywhere" }}>
-        {notice.kind === "error" ? notice.message : (
+        {notice.kind !== "done" ? notice.message : (
           <>
             {t("chat.optimized")}
             {notice.degraded
@@ -751,6 +752,7 @@ export function OptimizeResultLine({
                   </span>
                 </>
               )}
+            {notice.restored && notice.restored.length > 0 && ` · ${t("chat.optimizeRestored", { count: notice.restored.length })}`}
           </>
         )}
       </span>
@@ -767,7 +769,7 @@ export function OptimizeResultLine({
           {t("chat.optimizeUndo")}
         </button>
       )}
-      {notice.kind === "error" && (
+      {notice.kind !== "done" && (
         <button
           type="button"
           onClick={onDismiss}
@@ -888,7 +890,11 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
   const attachedImagesRef = useRef(attachedImages);
   const pendingImageCountRef = useRef(0);
   const optimizeAbortRef = useRef<AbortController | null>(null);
-  valueRef.current = value;
+  // Mirror the controlled value after commit, not during render: a render React
+  // throws away would leave a stale value in this ref.
+  useEffect(() => {
+    valueRef.current = value;
+  }, [value]);
   attachedImagesRef.current = attachedImages;
 
   useImperativeHandle(ref, () => ({
@@ -1334,7 +1340,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
   // The one place the command rule stays visible now that the options moved to
   // Settings › General: on the button, while such a draft is in the composer.
   const optimizeTitle = optimizing
-    ? t("chat.optimizeCancel")
+    ? t("chat.optimizeWorking")
     : optimizeDisabledReason
       ?? (optimizeSplit.command
         ? `${t("chat.optimizePrompt")} · ${t("chat.optimizeCommandOnly", { command: optimizeSplit.command })}`
@@ -1359,15 +1365,6 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
   ), [slashCommands]);
 
   const runOptimize = useCallback(() => {
-    // A second click while a request runs cancels it: the provider call is
-    // abandoned rather than left to finish into a composer the user moved on.
-    if (optimizeAbortRef.current) {
-      optimizeAbortRef.current.abort();
-      optimizeAbortRef.current = null;
-      setOptimizing(false);
-      return;
-    }
-
     const text = valueRef.current;
     const split = splitCommandInput(text, knownCommands);
     const target = optimizeModel;
@@ -1415,17 +1412,28 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
         if (!optimized) throw new Error(t("chat.optimizeFailed"));
         // The draft moved on while the model worked (a send, a steering message,
         // an edit): its answer would land on text the user no longer has.
-        if (valueRef.current !== text) return;
-        // A rewrite that dropped an @file or a link would change what pi reads.
-        if (!referencesPreserved(collectReferences(split.body), collectReferences(optimized))) {
-          throw new Error(t("chat.optimizeLostReferences"));
+        if (valueRef.current !== text) {
+          setOptimizeNotice({ kind: "info", message: t("chat.optimizeDraftChanged") });
+          return;
         }
-        applyOptimizedText(composeCommandInput(split, optimized));
+        // A rewrite that dropped an @file or a link would change what pi reads.
+        // Put the missing references back instead of discarding the rewrite.
+        const restored = missingReferences(collectReferences(split.body), collectReferences(optimized));
+        const repaired = restored.length > 0 ? `${optimized} ${restored.join(" ")}`.trim() : optimized;
+        const next = composeCommandInput(split, repaired);
+        // The model echoing the draft is a valid answer with nothing to show:
+        // say so instead of replacing the draft with itself and reporting success.
+        if (next.trim() === text.trim()) {
+          setOptimizeNotice({ kind: "info", message: t("chat.optimizeUnchanged") });
+          return;
+        }
+        applyOptimizedText(next);
         setOptimizeNotice({
           kind: "done",
           previous: text,
           files: data.retrieved ?? [],
           degraded: data.degraded === true,
+          restored,
         });
       })
       .catch((error: unknown) => {
@@ -1445,6 +1453,14 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
     applyOptimizedText, cwd, findPaletteCommand, knownCommands, onLoadSlashCommands,
     optimizeModel, optimizePreference.search, slashCommands, t,
   ]);
+
+  // The optimizer in flight is cancelled only by this button, never by the
+  // Optimize button itself: a second click there must not throw the result away.
+  const cancelOptimize = useCallback(() => {
+    optimizeAbortRef.current?.abort();
+    optimizeAbortRef.current = null;
+    setOptimizing(false);
+  }, []);
 
   const undoOptimize = useCallback(() => {
     if (optimizeNotice?.kind !== "done") return;
@@ -2794,12 +2810,13 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
             {/* Prompt optimizer: rewrites the draft, or only the text after a command.
                 Its model and search choices live in Settings › General. */}
             {showOptimize && (
+              <>
               <button
                 type="button"
                 onClick={runOptimize}
-                disabled={!canOptimize && !optimizing}
+                disabled={!canOptimize}
                 title={optimizeTitle}
-                aria-label={optimizing ? t("chat.optimizeCancel") : t("chat.optimizePrompt")}
+                aria-label={t("chat.optimizePrompt")}
                 aria-busy={optimizing || undefined}
                 style={{
                   flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
@@ -2807,18 +2824,18 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
                   background: "none", border: "none",
                   borderRadius: 9,
                   color: optimizing ? "var(--accent)" : canOptimize ? "var(--text-muted)" : "var(--text-dim)",
-                  cursor: canOptimize || optimizing ? "pointer" : "not-allowed",
+                  cursor: canOptimize ? "pointer" : "not-allowed",
                   opacity: canOptimize || optimizing ? 1 : 0.5,
                   transition: "background 0.12s, color 0.12s",
                 }}
                 onMouseEnter={(e) => {
-                  if (!canOptimize && !optimizing) return;
+                  if (!canOptimize) return;
                   e.currentTarget.style.background = "var(--bg-hover)";
-                  e.currentTarget.style.color = optimizing ? "var(--accent)" : "var(--text)";
+                  e.currentTarget.style.color = "var(--text)";
                 }}
                 onMouseLeave={(e) => {
                   e.currentTarget.style.background = "none";
-                  e.currentTarget.style.color = optimizing ? "var(--accent)" : canOptimize ? "var(--text-muted)" : "var(--text-dim)";
+                  e.currentTarget.style.color = canOptimize ? "var(--text-muted)" : "var(--text-dim)";
                 }}
               >
                 {optimizing ? (
@@ -2832,6 +2849,37 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
                   </svg>
                 )}
               </button>
+              {/* A separate, explicit cancel: the Optimize button is disabled
+                  while a request runs, so a second click can never drop it. */}
+              {optimizing && (
+                <button
+                  type="button"
+                  onClick={cancelOptimize}
+                  title={t("chat.optimizeCancel")}
+                  aria-label={t("chat.optimizeCancel")}
+                  style={{
+                    flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
+                    width: 32, height: 32, padding: 0,
+                    background: "none", border: "none", borderRadius: 9,
+                    color: "var(--text-dim)", cursor: "pointer",
+                    transition: "background 0.12s, color 0.12s",
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = "var(--bg-hover)";
+                    e.currentTarget.style.color = "var(--text)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = "none";
+                    e.currentTarget.style.color = "var(--text-dim)";
+                  }}
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+                    <line x1="6" y1="6" x2="18" y2="18" />
+                    <line x1="18" y1="6" x2="6" y2="18" />
+                  </svg>
+                </button>
+              )}
+              </>
             )}
             {/* Model selector - visible always, disabled while the session or switch is busy */}
             {(modelOptions.length > 0 || model || modelError) && onModelChange && (
