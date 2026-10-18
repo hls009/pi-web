@@ -596,6 +596,7 @@ export const enLocale: LocalePlugin = {
     "chat.optimizeCancel": "Cancel optimization",
     "chat.optimized": "Prompt optimized",
     "chat.optimizeUsedFiles": "{count} project file(s) used",
+    "chat.optimizeFilesTitle": "Files used as context",
     "chat.optimizeNoFiles": "no project file matched",
     "chat.optimizeUndo": "Undo",
     "chat.optimizeFailed": "Unable to optimize the prompt.",

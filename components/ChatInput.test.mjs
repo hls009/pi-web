@@ -11,7 +11,7 @@ const jiti = createJiti(import.meta.url, {
 });
 const React = await jiti.import("react");
 const { renderToStaticMarkup } = await jiti.import("react-dom/server");
-const { ChatInput, ModelErrorBanner, ModelScopeWarningBanner, RUN_END_CLICK_GUARD_MS, canClearBuiltinCommandInput, canRestoreUserMessage, canRunBuiltinSlashCommandWhileStreaming, compressImageFile, cycleListIndex, filterModelOptions, getUpwardMenuMaxHeight, getUserMessageText, getUserMessageDraftImages, isExactSlashCommand, isRunEndStrayClick, modelSupportsImageInput, offersBuiltinSlashCommandWhileStreaming, replaceLinksWithMarkdown, replaceTextareaRange, shouldCompressImageFile, submitsSlashCommandOnEnter } = await jiti.import("./ChatInput.tsx");
+const { ChatInput, ModelErrorBanner, ModelScopeWarningBanner, OptimizeResultLine, RUN_END_CLICK_GUARD_MS, canClearBuiltinCommandInput, canRestoreUserMessage, canRunBuiltinSlashCommandWhileStreaming, compressImageFile, cycleListIndex, filterModelOptions, getUpwardMenuMaxHeight, getUserMessageText, getUserMessageDraftImages, isExactSlashCommand, isRunEndStrayClick, modelSupportsImageInput, offersBuiltinSlashCommandWhileStreaming, replaceLinksWithMarkdown, replaceTextareaRange, shouldCompressImageFile, submitsSlashCommandOnEnter } = await jiti.import("./ChatInput.tsx");
 const { isBareMcpCommand } = await jiti.import("@/lib/mcp-command");
 const { ModelSelector } = await jiti.import("./ModelSelector.tsx");
 // As ChatInput.tsx imports it: on Windows jiti loads "@/lib/draft-store.ts"
@@ -331,6 +331,37 @@ test("offers prompt optimization only when there is a draft to rewrite", () => {
   } finally {
     clearDraft(draftKey);
   }
+});
+
+test("lists the project files an optimized prompt used", () => {
+  const render = (notice) => renderToStaticMarkup(
+    React.createElement(
+      I18nProvider,
+      null,
+      React.createElement(OptimizeResultLine, {
+        notice,
+        onUndo() {},
+        onDismiss() {},
+      }),
+    ),
+  );
+
+  const html = render({
+    kind: "done",
+    previous: "fix it",
+    files: ["src/parser.ts", "lib/prompt-retrieval.ts"],
+    degraded: false,
+  });
+  assert.match(html, /2 project file\(s\) used/);
+  assert.match(html, /Files used as context/);
+  assert.match(html, /src\/parser\.ts/);
+  assert.match(html, /lib\/prompt-retrieval\.ts/);
+  assert.match(html, /aria-expanded="false"/);
+
+  // Nothing was read: the line says so and names no file.
+  const degraded = render({ kind: "done", previous: "fix it", files: [], degraded: true });
+  assert.match(degraded, /Prompt optimized · no project file matched/);
+  assert.doesNotMatch(degraded, /project file\(s\) used/);
 });
 
 test("renders the upstream model error", () => {

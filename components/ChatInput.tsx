@@ -113,9 +113,9 @@ interface Props {
 }
 
 /** The result line under the composer: what the optimizer did, or why it did not. */
-type OptimizeNotice =
+export type OptimizeNotice =
   | { kind: "error"; message: string }
-  | { kind: "done"; previous: string; files: number; degraded: boolean };
+  | { kind: "done"; previous: string; files: string[]; degraded: boolean };
 
 export interface ChatInputHandle {
   insertText: (text: string) => void;
@@ -635,6 +635,153 @@ export function ModelErrorBanner({ error }: { error?: string | null }) {
   const { t } = useI18n();
   if (!error) return null;
   return <ModelNoticeBanner tone="error" title={t("chat.modelError")} body={error} />;
+}
+
+/**
+ * The line under the composer after an Optimize click. A `done` notice names
+ * the project files whose excerpts reached the model; hovering or clicking that
+ * count opens the list of paths.
+ */
+export function OptimizeResultLine({
+  notice,
+  onUndo,
+  onDismiss,
+}: {
+  notice: OptimizeNotice;
+  onUndo: () => void;
+  onDismiss: () => void;
+}) {
+  const { t } = useI18n();
+  const isMobile = useIsMobile();
+  const [filesOpen, setFilesOpen] = useState(false);
+
+  // A new result (or a dismissal) starts closed.
+  useEffect(() => {
+    setFilesOpen(false);
+  }, [notice]);
+
+  const files = notice.kind === "done" ? notice.files : [];
+
+  return (
+    <div
+      role={notice.kind === "error" ? "alert" : "status"}
+      className="text-xs px-2 py-1"
+      style={{
+        display: "flex", alignItems: "center", gap: 6, marginTop: 4,
+        color: notice.kind === "error" ? "rgb(239,68,68)" : "var(--text-muted)",
+      }}
+    >
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }} aria-hidden="true">
+        {notice.kind === "error" ? (
+          <>
+            <circle cx="12" cy="12" r="9" />
+            <line x1="12" y1="8" x2="12" y2="13" />
+            <line x1="12" y1="16.5" x2="12.01" y2="16.5" />
+          </>
+        ) : (
+          <path d="M11.5 3.2 13 7.4l4.2 1.5L13 10.4l-1.5 4.2L10 10.4 5.8 8.9 10 7.4Z" />
+        )}
+      </svg>
+      <span style={{ minWidth: 0, flex: 1, overflowWrap: "anywhere" }}>
+        {notice.kind === "error" ? notice.message : (
+          <>
+            {t("chat.optimized")}
+            {notice.degraded
+              ? ` · ${t("chat.optimizeNoFiles")}`
+              : files.length > 0 && (
+                <>
+                  {" · "}
+                  <span
+                    style={{ position: "relative", display: "inline-block" }}
+                    onMouseEnter={isMobile ? undefined : () => setFilesOpen(true)}
+                    onMouseLeave={isMobile ? undefined : () => setFilesOpen(false)}
+                  >
+                    <button
+                      type="button"
+                      aria-expanded={filesOpen}
+                      onClick={() => setFilesOpen((open) => (isMobile ? !open : true))}
+                      onFocus={() => setFilesOpen(true)}
+                      onBlur={() => setFilesOpen(false)}
+                      style={{
+                        padding: 0, border: "none", background: "none",
+                        color: "var(--text-muted)", cursor: "pointer",
+                        font: "inherit", textDecoration: "underline dotted",
+                        textUnderlineOffset: 2,
+                      }}
+                    >
+                      {t("chat.optimizeUsedFiles", { count: files.length })}
+                    </button>
+                    <div
+                      role="tooltip"
+                      style={{
+                        display: filesOpen ? "block" : "none",
+                        position: "absolute", bottom: "100%", left: 0, zIndex: 40,
+                        // Transparent bridge across the gap to the count, so moving
+                        // the pointer onto the list does not leave the hover area.
+                        paddingBottom: 6,
+                      }}
+                    >
+                      <div
+                        style={{
+                          minWidth: 180, maxWidth: "min(360px, 80vw)", maxHeight: 220,
+                          overflowY: "auto", padding: "8px 10px",
+                          background: "var(--bg-panel)", border: "1px solid var(--border)",
+                          borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.16)",
+                          textAlign: "left", whiteSpace: "normal",
+                        }}
+                      >
+                        <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-dim)", marginBottom: 4 }}>
+                          {t("chat.optimizeFilesTitle")}
+                        </div>
+                        {files.map((file) => (
+                          <div
+                            key={file}
+                            title={file}
+                            style={{
+                              fontFamily: "var(--font-mono)", fontSize: 11.5, color: "var(--text)",
+                              whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                              lineHeight: 1.7,
+                            }}
+                          >
+                            {file}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </span>
+                </>
+              )}
+          </>
+        )}
+      </span>
+      {notice.kind === "done" && (
+        <button
+          type="button"
+          onClick={onUndo}
+          style={{
+            flexShrink: 0, padding: 0,
+            background: "none", border: "none",
+            color: "var(--accent)", cursor: "pointer", fontSize: 12,
+          }}
+        >
+          {t("chat.optimizeUndo")}
+        </button>
+      )}
+      {notice.kind === "error" && (
+        <button
+          type="button"
+          onClick={onDismiss}
+          aria-label={t("chat.close")}
+          style={{ flexShrink: 0, display: "flex", padding: 0, background: "none", border: "none", color: "var(--text-dim)", cursor: "pointer" }}
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+            <line x1="6" y1="6" x2="18" y2="18" />
+            <line x1="18" y1="6" x2="6" y2="18" />
+          </svg>
+        </button>
+      )}
+    </div>
+  );
 }
 
 /** True when the selected model is known to accept image input (#584). Unknown modality info never blocks the user. */
@@ -1277,7 +1424,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
         setOptimizeNotice({
           kind: "done",
           previous: text,
-          files: data.retrieved?.length ?? 0,
+          files: data.retrieved ?? [],
           degraded: data.degraded === true,
         });
       })
@@ -2598,64 +2745,11 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
 
         {/* Prompt optimizer result: what it did, and the way back */}
         {optimizeNotice && (
-          <div
-            role={optimizeNotice.kind === "error" ? "alert" : "status"}
-            className="text-xs px-2 py-1"
-            style={{
-              display: "flex", alignItems: "center", gap: 6, marginTop: 4,
-              color: optimizeNotice.kind === "error" ? "rgb(239,68,68)" : "var(--text-muted)",
-            }}
-          >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }} aria-hidden="true">
-              {optimizeNotice.kind === "error" ? (
-                <>
-                  <circle cx="12" cy="12" r="9" />
-                  <line x1="12" y1="8" x2="12" y2="13" />
-                  <line x1="12" y1="16.5" x2="12.01" y2="16.5" />
-                </>
-              ) : (
-                <path d="M11.5 3.2 13 7.4l4.2 1.5L13 10.4l-1.5 4.2L10 10.4 5.8 8.9 10 7.4Z" />
-              )}
-            </svg>
-            <span style={{ minWidth: 0, flex: 1, overflowWrap: "anywhere" }}>
-              {optimizeNotice.kind === "error"
-                ? optimizeNotice.message
-                : [
-                  t("chat.optimized"),
-                  optimizeNotice.degraded
-                    ? t("chat.optimizeNoFiles")
-                    : optimizeNotice.files > 0
-                      ? t("chat.optimizeUsedFiles", { count: optimizeNotice.files })
-                      : null,
-                ].filter(Boolean).join(" · ")}
-            </span>
-            {optimizeNotice.kind === "done" && (
-              <button
-                type="button"
-                onClick={undoOptimize}
-                style={{
-                  flexShrink: 0, padding: 0,
-                  background: "none", border: "none",
-                  color: "var(--accent)", cursor: "pointer", fontSize: 12,
-                }}
-              >
-                {t("chat.optimizeUndo")}
-              </button>
-            )}
-            {optimizeNotice.kind === "error" && (
-              <button
-                type="button"
-                onClick={() => setOptimizeNotice(null)}
-                aria-label={t("chat.close")}
-                style={{ flexShrink: 0, display: "flex", padding: 0, background: "none", border: "none", color: "var(--text-dim)", cursor: "pointer" }}
-              >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-                  <line x1="6" y1="6" x2="18" y2="18" />
-                  <line x1="18" y1="6" x2="6" y2="18" />
-                </svg>
-              </button>
-            )}
-          </div>
+          <OptimizeResultLine
+            notice={optimizeNotice}
+            onUndo={undoOptimize}
+            onDismiss={() => setOptimizeNotice(null)}
+          />
         )}
 
         {/* Bottom bar: left | center (context) | right */}

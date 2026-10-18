@@ -596,6 +596,7 @@ export const zhTWLocale: LocalePlugin = {
     "chat.optimizeCancel": "取消最佳化",
     "chat.optimized": "提示詞已最佳化",
     "chat.optimizeUsedFiles": "使用了 {count} 個專案檔案",
+    "chat.optimizeFilesTitle": "作為最佳化依據的檔案",
     "chat.optimizeNoFiles": "未符合任何專案檔案",
     "chat.optimizeUndo": "復原",
     "chat.optimizeFailed": "無法最佳化提示詞。",

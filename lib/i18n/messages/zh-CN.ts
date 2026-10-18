@@ -596,6 +596,7 @@ export const zhCNLocale: LocalePlugin = {
     "chat.optimizeCancel": "取消优化",
     "chat.optimized": "提示词已优化",
     "chat.optimizeUsedFiles": "使用了 {count} 个项目文件",
+    "chat.optimizeFilesTitle": "作为优化依据的文件",
     "chat.optimizeNoFiles": "未匹配到项目文件",
     "chat.optimizeUndo": "撤销",
     "chat.optimizeFailed": "无法优化提示词。",
