@@ -75,19 +75,6 @@ interface CompleteOptions {
   signal?: AbortSignal;
 }
 
-function linkSignals(...signals: Array<AbortSignal | undefined>): AbortSignal {
-  const controller = new AbortController();
-  for (const signal of signals) {
-    if (!signal) continue;
-    if (signal.aborted) {
-      controller.abort();
-      break;
-    }
-    signal.addEventListener("abort", () => controller.abort(), { once: true });
-  }
-  return controller.signal;
-}
-
 function textOf(message: AssistantMessage): string {
   return message.content
     .filter((block) => block.type === "text")
@@ -102,8 +89,9 @@ async function completeText(
   context: { systemPrompt: string; userMessage: string },
   options: CompleteOptions,
 ): Promise<AssistantMessage> {
+  options.signal?.throwIfAborted();
   const controller = new AbortController();
-  const signal = linkSignals(options.signal, controller.signal);
+  const signal = AbortSignal.any(options.signal ? [options.signal, controller.signal] : [controller.signal]);
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs);
   // A rewrite is a rewriting task, not a reasoning one: the cheapest level the
   // model supports, the same rule titles use (and the same helper).
@@ -125,14 +113,20 @@ async function completeText(
       ...(thinkingLevel !== "off" ? { reasoning: thinkingLevel } : {}),
     });
 
+    options.signal?.throwIfAborted();
+    if (controller.signal.aborted) throw new PromptOptimizeError("The optimizer request timed out", 504);
     if (message.stopReason === "error") {
       throw new PromptOptimizeError(message.errorMessage || "The optimizer request failed", 502);
     }
     if (message.stopReason === "aborted") {
       throw new PromptOptimizeError("The optimizer request timed out", 504);
     }
+    if (message.stopReason !== "stop" || message.content.some((block) => block.type === "toolCall")) {
+      throw new PromptOptimizeError("The optimizer returned an incomplete or non-text response", 502);
+    }
     return message;
   } catch (error) {
+    options.signal?.throwIfAborted();
     // A provider that rejects on the aborting signal reads the same: this
     // request's own deadline, not a caller who left.
     if (controller.signal.aborted && !options.signal?.aborted) {
@@ -180,13 +174,16 @@ async function planRetrieval(
     }, { maxTokens: PLAN_MAX_TOKENS, timeoutMs: PLAN_TIMEOUT_MS, signal });
     return parseRetrievalPlan(textOf(message));
   } catch {
+    signal?.throwIfAborted();
     // A failed plan is not a failed rewrite: fall back to rewriting alone.
     return null;
   }
 }
 
 export async function runPromptOptimize(input: PromptOptimizeInput): Promise<PromptOptimizeResult> {
+  input.signal?.throwIfAborted();
   const runtime = await getModelRuntimeWithExtensions();
+  input.signal?.throwIfAborted();
   const model = resolveModel(runtime, input.provider, input.modelId);
 
   let projectContext: string | undefined;
@@ -195,11 +192,15 @@ export async function runPromptOptimize(input: PromptOptimizeInput): Promise<Pro
 
   if (input.search) {
     const searchCwd = await isAllowedSearchCwd(input.cwd);
+    input.signal?.throwIfAborted();
     const plan = searchCwd ? await planRetrieval(runtime, model, input.body, input.signal) : null;
+    input.signal?.throwIfAborted();
     if (plan && searchCwd) {
       try {
         const listing = await listProjectFiles(searchCwd);
+        input.signal?.throwIfAborted();
         const contentHits = await searchProjectContents(searchCwd, plan.keywords, CONTENT_HIT_LIMIT);
+        input.signal?.throwIfAborted();
         const candidates = rankCandidateFiles(
           listing.files,
           plan,
@@ -207,6 +208,7 @@ export async function runPromptOptimize(input: PromptOptimizeInput): Promise<Pro
           contentHits,
         );
         const excerpts = await readProjectExcerpts(searchCwd, candidates);
+        input.signal?.throwIfAborted();
         if (excerpts.length > 0) {
           retrieved = excerpts.map((excerpt) => excerpt.path);
           projectContext = formatProjectContext(excerpts, Math.max(0, candidates.length - excerpts.length));
@@ -214,6 +216,7 @@ export async function runPromptOptimize(input: PromptOptimizeInput): Promise<Pro
           degraded = true;
         }
       } catch {
+        input.signal?.throwIfAborted();
         degraded = true;
       }
     } else {
@@ -221,6 +224,7 @@ export async function runPromptOptimize(input: PromptOptimizeInput): Promise<Pro
     }
   }
 
+  input.signal?.throwIfAborted();
   const message = await completeText(runtime, model, {
     systemPrompt: buildOptimizeSystemPrompt({
       ...(input.command ? { command: input.command } : {}),
@@ -233,9 +237,9 @@ export async function runPromptOptimize(input: PromptOptimizeInput): Promise<Pro
   const text = textOf(message);
   if (!text) throw new PromptOptimizeError("The optimizer returned an empty prompt", 502);
 
-  return {
-    text: parseOptimizedText(text),
-    retrieved,
-    degraded,
-  };
+  try {
+    return { text: parseOptimizedText(text, input.body), retrieved, degraded };
+  } catch (error) {
+    throw new PromptOptimizeError(error instanceof Error ? error.message : "Invalid optimizer response", 502);
+  }
 }

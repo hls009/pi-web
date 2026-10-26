@@ -74,11 +74,11 @@ export async function POST(req: Request) {
     });
     return NextResponse.json(result);
   } catch (error) {
+    // Cancellation wins over provider errors (including an aborted response).
+    if (req.signal.aborted) return new Response(null, { status: 499 });
     if (error instanceof PromptOptimizeError) {
       return NextResponse.json({ error: error.message }, { status: error.status });
     }
-    // A cancelled request has no one left to answer.
-    if (req.signal.aborted) return new Response(null, { status: 499 });
     return NextResponse.json({
       error: error instanceof Error ? error.message : String(error),
     }, { status: 500 });

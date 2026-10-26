@@ -49,3 +49,44 @@ test("reports an unknown model without calling anything", async () => {
   assert.equal(response.status, 400);
   assert.deepEqual(await response.json(), { error: "Model not found: pi-web-nope/pi-web-nope" });
 });
+
+test("keeps the public response shape and maps invalid results, timeouts and cancellation", async () => {
+  const payload = { body: "fix login", provider: "isolated", modelId: "model" };
+  let response;
+  let calls = 0;
+  let onComplete = () => {};
+  globalThis.__piWebSharedModelRuntime = {
+    agentDir, expiresAt: Infinity, queueKey: "optimize-route-test",
+    runtime: Promise.resolve({
+      refresh: async () => {}, getAvailable: async () => [],
+      getModel: () => ({ id: "model", provider: "isolated", reasoning: false }),
+      completeSimple: async () => { calls++; onComplete(); return response; },
+    }),
+  };
+  try {
+    response = { stopReason: "stop", content: [{ type: "text", text: '{"text":"Fix the login button."}' }] };
+    const success = await post({ ...payload, sessionId: "current-chat", messages: [{ role: "user", content: "do not inject" }] });
+    assert.equal(success.status, 200);
+    assert.deepEqual(await success.json(), { text: "Fix the login button.", retrieved: [], degraded: false });
+    for (const stopReason of ["length", "toolUse", "error"]) {
+      response = { ...response, stopReason };
+      assert.equal((await post(payload)).status, 502);
+    }
+    response = { stopReason: "stop", content: [{ type: "text", text: "Here is your prompt" }] };
+    assert.equal((await post(payload)).status, 502);
+    response = { stopReason: "aborted", content: [] };
+    assert.equal((await post(payload)).status, 504);
+    const controller = new AbortController();
+    onComplete = () => controller.abort();
+    assert.equal((await POST(new Request("http://localhost/api/prompt/optimize", {
+      method: "POST", headers: jsonHeaders, body: JSON.stringify(payload), signal: controller.signal,
+    }))).status, 499);
+    const previousCalls = calls;
+    assert.equal((await POST(new Request("http://localhost/api/prompt/optimize", {
+      method: "POST", headers: jsonHeaders, body: JSON.stringify(payload), signal: controller.signal,
+    }))).status, 499);
+    assert.equal(calls, previousCalls);
+  } finally {
+    delete globalThis.__piWebSharedModelRuntime;
+  }
+});

@@ -833,7 +833,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
   const { ui: uiFontFamily, uiWeight } = useFontPreferences();
   const isMobile = useIsMobile();
   const enterSendMode = useEnterSendMode();
-  const [value, setValue] = useState(() => (draftKey ? getDraft(draftKey)?.value ?? "" : ""));
+  const [value, setValueState] = useState(() => (draftKey ? getDraft(draftKey)?.value ?? "" : ""));
   const [toolDropdownOpen, setToolDropdownOpen] = useState(false);
   const [thinkingDropdownOpen, setThinkingDropdownOpen] = useState(false);
   const [controlsMenuOpen, setControlsMenuOpen] = useState(false);
@@ -889,7 +889,37 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
   const valueRef = useRef(value);
   const attachedImagesRef = useRef(attachedImages);
   const pendingImageCountRef = useRef(0);
-  const optimizeAbortRef = useRef<AbortController | null>(null);
+  const draftRevisionRef = useRef(0);
+  const optimizeContextRef = useRef({ draftKey, cwd });
+  const optimizeRequestRef = useRef<{
+    controller: AbortController;
+    draftKey: string | undefined;
+    cwd: string | null | undefined;
+    revision: number;
+  } | null>(null);
+  const invalidateOptimize = useCallback(() => {
+    draftRevisionRef.current += 1;
+    optimizeRequestRef.current?.controller.abort();
+    optimizeRequestRef.current = null;
+    setOptimizing(false);
+  }, []);
+  // Invalidate synchronously at every editing entry point, including an edit
+  // followed by Undo before React renders. Comparing text alone misses that ABA.
+  const setValue = useCallback<React.Dispatch<React.SetStateAction<string>>>((next) => {
+    invalidateOptimize();
+    setOptimizeNotice(null);
+    setValueState(next);
+  }, [invalidateOptimize]);
+  useLayoutEffect(() => {
+    optimizeContextRef.current = { draftKey, cwd };
+    invalidateOptimize();
+    setOptimizeNotice(null);
+  }, [draftKey, cwd, invalidateOptimize]);
+  useLayoutEffect(() => () => {
+    optimizeRequestRef.current?.controller.abort();
+    optimizeRequestRef.current = null;
+    draftRevisionRef.current += 1;
+  }, []);
   // Mirror the controlled value after commit, not during render: a render React
   // throws away would leave a stale value in this ref.
   useEffect(() => {
@@ -1129,17 +1159,13 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
     setAtQuery(null);
     setHistoryMenuOpen(false);
     setOptimizeNotice(null);
-    // Sending ends the optimizer's errand: its result would land on a new turn.
-    optimizeAbortRef.current?.abort();
-    optimizeAbortRef.current = null;
-    setOptimizing(false);
     if (draftKey) clearDraft(draftKey);
     if (draftKeyRef.current && draftKeyRef.current !== draftKey) clearDraft(draftKeyRef.current);
     clearImages();
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
-  }, [clearImages, draftKey]);
+  }, [clearImages, draftKey, setValue]);
 
   useEffect(() => {
     if (!draftKey || draftKeyRef.current !== draftKey) return;
@@ -1173,7 +1199,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
       prev.forEach(revokeImagePreview);
       return nextImages;
     });
-  }, [draftKey]);
+  }, [draftKey, setValue]);
 
   const resizeTextarea = useCallback(() => {
     const ta = textareaRef.current;
@@ -1358,7 +1384,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
       ta.style.height = "auto";
       ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
     });
-  }, []);
+  }, [setValue]);
 
   const findPaletteCommand = useCallback((name: string): SlashCommandPaletteItem | undefined => (
     [...BUILTIN_SLASH_COMMANDS, ...(slashCommands ?? [])].find((command) => command.name === name)
@@ -1368,23 +1394,24 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
     const text = valueRef.current;
     const split = splitCommandInput(text, knownCommands);
     const target = optimizeModel;
-    if (!hasOptimizableBody(split.body, split.command) || !target) return;
+    if (optimizeRequestRef.current || !hasOptimizableBody(split.body, split.command) || !target) return;
 
-    // The palette may never have been opened; ask once so the next split knows
-    // the session's commands. This click uses the structural rule meanwhile.
-    if (slashCommands == null && !slashCommandsRequestedRef.current && onLoadSlashCommands) {
-      slashCommandsRequestedRef.current = true;
-      Promise.resolve(onLoadSlashCommands()).catch(() => {
-        slashCommandsRequestedRef.current = false;
-      });
-    }
+    // Use only commands already loaded by the palette. Loading them here can
+    // ensure/start an AgentSession, which an isolated draft action must never do.
 
     const commandName = split.command?.slice(1) ?? "";
     const paletteCommand = commandName ? findPaletteCommand(commandName) : undefined;
     const commandDescription = paletteCommand ? getSlashDescription(paletteCommand, t) : "";
 
     const controller = new AbortController();
-    optimizeAbortRef.current = controller;
+    const request = { controller, draftKey: draftKeyRef.current, cwd, revision: draftRevisionRef.current };
+    optimizeRequestRef.current = request;
+    const isCurrent = () => optimizeRequestRef.current === request
+      && !controller.signal.aborted
+      && draftRevisionRef.current === request.revision
+      && draftKeyRef.current === request.draftKey
+      && optimizeContextRef.current.draftKey === request.draftKey
+      && optimizeContextRef.current.cwd === request.cwd;
     setOptimizing(true);
     setOptimizeNotice(null);
 
@@ -1408,6 +1435,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
         return data;
       })
       .then((data) => {
+        if (!isCurrent()) return;
         const optimized = (data.text ?? "").trim();
         if (!optimized) throw new Error(t("chat.optimizeFailed"));
         // The draft moved on while the model worked (a send, a steering message,
@@ -1437,45 +1465,33 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
         });
       })
       .catch((error: unknown) => {
-        if (controller.signal.aborted) return;
+        if (!isCurrent()) return;
         setOptimizeNotice({
           kind: "error",
           message: error instanceof Error ? error.message : String(error),
         });
       })
       .finally(() => {
-        if (optimizeAbortRef.current === controller) {
-          optimizeAbortRef.current = null;
+        if (isCurrent()) {
+          optimizeRequestRef.current = null;
           setOptimizing(false);
         }
       });
   }, [
-    applyOptimizedText, cwd, findPaletteCommand, knownCommands, onLoadSlashCommands,
-    optimizeModel, optimizePreference.search, slashCommands, t,
+    applyOptimizedText, cwd, findPaletteCommand, knownCommands,
+    optimizeModel, optimizePreference.search, t,
   ]);
 
-  // The optimizer in flight is cancelled only by this button, never by the
-  // Optimize button itself: a second click there must not throw the result away.
+  // A separate cancel action, also used by editing and context changes.
   const cancelOptimize = useCallback(() => {
-    optimizeAbortRef.current?.abort();
-    optimizeAbortRef.current = null;
-    setOptimizing(false);
-  }, []);
+    invalidateOptimize();
+  }, [invalidateOptimize]);
 
   const undoOptimize = useCallback(() => {
     if (optimizeNotice?.kind !== "done") return;
     applyOptimizedText(optimizeNotice.previous);
     setOptimizeNotice(null);
   }, [applyOptimizedText, optimizeNotice]);
-
-  // Leaving a turn's draft (session switch, new draft key) drops the notice.
-  useEffect(() => {
-    setOptimizeNotice(null);
-  }, [draftKey]);
-
-  useEffect(() => () => {
-    optimizeAbortRef.current?.abort();
-  }, []);
 
   // ── @ file autocomplete ──────────────────────────────────────────────────
   // Recomputed from the text before the caret on every change/caret move.
@@ -1628,7 +1644,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
       ta.style.height = "auto";
       ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
     });
-  }, []);
+  }, [setValue]);
 
   const applySlashCommand = useCallback((command: SlashCommandPaletteItem) => {
     const nextValue = `/${command.name} `;
@@ -1643,7 +1659,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
       ta.style.height = "auto";
       ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
     });
-  }, []);
+  }, [setValue]);
 
   const sendQueued = useCallback((mode: "steer" | "followup") => {
     const msg = value.trim();
@@ -1911,7 +1927,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
       ta.focus();
       ta.setSelectionRange(start + markdown.length, start + markdown.length);
     });
-  }, [compact, processImageFiles, updateAtQuery]);
+  }, [compact, processImageFiles, updateAtQuery, setValue]);
 
   useEffect(() => {
     if (slashQuery === null) {
