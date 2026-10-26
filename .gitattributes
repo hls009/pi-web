@@ -1,0 +1,70 @@
+# Line endings
+# ---------------------------------------------------------------------------
+# One policy for every platform: LF inside the repository, and LF in every
+# working tree too — on Windows as well. That way a checkout under Windows,
+# macOS or Linux is byte-for-byte the same, and whatever a machine's
+# `core.autocrlf` happens to be cannot rewrite the files behind your back.
+#
+# If this file changes, renormalise the index once and commit the result:
+#   git add --renormalize .
+#   git status        # should not list the whole tree
+* text=auto eol=lf
+
+# Text files listed explicitly: `text=auto` has to guess, and it guesses
+# "binary" for a file that looks odd (mixed, truncated, unusual first block).
+# Forcing `text` makes the conversion happen regardless. `eol=lf` implies
+# `text` on its own; it is spelled out because it documents the intent.
+*.ts       text eol=lf
+*.tsx      text eol=lf
+*.js       text eol=lf
+*.jsx      text eol=lf
+*.mjs      text eol=lf
+*.cjs      text eol=lf
+*.css      text eol=lf
+*.json     text eol=lf
+*.md       text eol=lf
+*.mdx      text eol=lf
+*.html     text eol=lf
+*.txt      text eol=lf
+*.yml      text eol=lf
+*.yaml     text eol=lf
+*.sh       text eol=lf
+*.sql      text eol=lf
+*.svg      text eol=lf
+
+# Git's own files, and the files a shell reads.
+.gitignore     text eol=lf
+.gitattributes text eol=lf
+
+# Windows batch files are the one text format that cmd.exe genuinely needs
+# CRLF in; LF only breaks them on some Windows versions.
+*.bat      text eol=crlf
+*.cmd      text eol=crlf
+
+# Binary: no conversion, no diff, no merge. `binary` is `-diff -merge -text`.
+*.png      binary
+*.jpg      binary
+*.jpeg     binary
+*.gif      binary
+*.webp     binary
+*.avif     binary
+*.ico      binary
+*.icns     binary
+*.bmp      binary
+*.tiff     binary
+*.woff     binary
+*.woff2    binary
+*.ttf      binary
+*.otf      binary
+*.eot      binary
+*.pdf      binary
+*.zip      binary
+*.gz       binary
+*.tar      binary
+*.jar      binary
+*.wasm     binary
+*.mp3      binary
+*.mp4      binary
+*.webm     binary
+*.mov      binary
+*.sqlite   binary
